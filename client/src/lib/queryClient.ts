@@ -36,6 +36,19 @@ export async function apiRequest(
     credentials: "include",
   });
 
+  // Handle 401 Unauthorized - clear session and redirect to login
+  if (res.status === 401) {
+    localStorage.removeItem("user");
+    localStorage.removeItem("token");
+    queryClient.cancelQueries();
+    queryClient.clear();
+    // Only redirect if we're not already on login page
+    if (!window.location.pathname.includes("/login")) {
+      window.location.href = "/login";
+    }
+    throw new Error("Session expired. Please login again.");
+  }
+
   await throwIfResNotOk(res);
   return res;
 }
@@ -51,8 +64,21 @@ export const getQueryFn: <T>(options: {
       credentials: "include",
     });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    // Handle 401 Unauthorized
+    if (res.status === 401) {
+      if (unauthorizedBehavior === "returnNull") {
+        return null;
+      }
+      // Clear session and redirect to login
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
+      queryClient.cancelQueries();
+      queryClient.clear();
+      // Only redirect if we're not already on login page
+      if (!window.location.pathname.includes("/login")) {
+        window.location.href = "/login";
+      }
+      throw new Error("Session expired. Please login again.");
     }
 
     await throwIfResNotOk(res);

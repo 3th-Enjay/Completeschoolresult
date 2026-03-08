@@ -130,6 +130,7 @@ export interface IStorage {
   deleteClassSubjects(classId: string): Promise<void>;
 
   // Notifications
+  getNotification(id: string): Promise<Notification | undefined>;
   createNotification(notification: InsertNotification): Promise<Notification>;
   listNotifications(userId: string, limit?: number): Promise<Notification[]>;
   markNotificationRead(id: string): Promise<Notification>;
@@ -583,6 +584,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Notifications
+  async getNotification(id: string): Promise<Notification | undefined> {
+    const [notification] = await db.select().from(notifications).where(eq(notifications.id, id));
+    return notification || undefined;
+  }
+
   async createNotification(notification: InsertNotification): Promise<Notification> {
     const [record] = await db.insert(notifications).values(notification).returning();
     return record;
@@ -1298,8 +1304,17 @@ export class DatabaseStorage implements IStorage {
     for (const classKey of Object.keys(resultsByClass)) {
       const classResults = resultsByClass[classKey];
       
-      // Sort by average score descending
+      // Sort by total score descending, then by average score descending as tiebreaker
       classResults.sort((a: ResultItem, b: ResultItem) => {
+        const totalA = parseFloat(a.totalScore || '0');
+        const totalB = parseFloat(b.totalScore || '0');
+        
+        // First compare by total score
+        if (totalB !== totalA) {
+          return totalB - totalA;
+        }
+        
+        // If total scores are equal, compare by average score
         const avgA = parseFloat(a.averageScore || '0');
         const avgB = parseFloat(b.averageScore || '0');
         return avgB - avgA;
@@ -1307,19 +1322,25 @@ export class DatabaseStorage implements IStorage {
       
       const totalStudentsCount = classResults.length;
       let currentPosition = 1;
+      let previousTotal: number | null = null;
       let previousAverage: number | null = null;
       
       for (let i = 0; i < classResults.length; i++) {
         const result = classResults[i];
+        const currentTotal = parseFloat(result.totalScore || '0');
         const currentAverage = parseFloat(result.averageScore || '0');
         
-        if (previousAverage !== null && currentAverage === previousAverage) {
-          // Same average as previous, keep same position
+        // Update position if total score or average score differs from previous
+        if (previousTotal !== null && previousAverage !== null) {
+          if (currentTotal !== previousTotal || currentAverage !== previousAverage) {
+            currentPosition = i + 1;
+          }
+          // If both are same, keep same position (tied)
         } else {
-          // Different average, update position
           currentPosition = i + 1;
         }
         
+        previousTotal = currentTotal;
         previousAverage = currentAverage;
         
         // Update the result with position and total students
