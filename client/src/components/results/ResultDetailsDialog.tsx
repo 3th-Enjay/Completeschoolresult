@@ -75,7 +75,9 @@ export function ResultDetailsDialog({ open, onOpenChange, result: initialResult 
 
     setLoading(true);
     try {
-      await apiRequest("PATCH", `/api/results/${result.id}/comment`, { comment });
+      await apiRequest("POST", `/api/results/${result.id}/comment`, isTeacher
+        ? { teacherComment: comment }
+        : { principalComment: comment });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/results"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/students"] }),
@@ -112,7 +114,7 @@ export function ResultDetailsDialog({ open, onOpenChange, result: initialResult 
 
     setApproving(true);
     try {
-      await apiRequest("PATCH", `/api/results/${result.id}/approve`, {});
+      await apiRequest("POST", `/api/results/${result.id}/approve`, {});
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/results"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/students"] }),
@@ -149,7 +151,7 @@ export function ResultDetailsDialog({ open, onOpenChange, result: initialResult 
 
     setRejecting(true);
     try {
-      await apiRequest("PATCH", `/api/results/${result.id}/reject`, { reason: rejectionReason });
+      await apiRequest("POST", `/api/results/${result.id}/reject`, { reason: rejectionReason });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/results"] }),
         queryClient.invalidateQueries({ queryKey: ["/api/students"] }),

@@ -1144,27 +1144,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/pins", authenticate, authorize("super_admin", "school_admin"), async (req: AuthRequest, res) => {
     try {
-      const { quantity, session, term, schoolId, maxUsageCount = 1 } = req.body;
+      const { quantity, session, term, schoolId, maxUsageCount = 1, expiryDate } = req.body;
       const targetSchoolId = req.user!.role === "super_admin" ? schoolId : req.user!.schoolId!;
 
       if (!targetSchoolId) {
         return res.status(400).json({ message: "School ID is required" });
       }
 
+      const pinQuantity = Math.max(1, Math.min(1000, parseInt(quantity) || 0));
+      if (!pinQuantity) {
+        return res.status(400).json({ message: "A valid quantity is required" });
+      }
+
+      if (!session || !term) {
+        return res.status(400).json({ message: "Session and term are required" });
+      }
+
       // Validate maxUsageCount
       const usageLimit = Math.max(1, Math.min(100, parseInt(maxUsageCount) || 1));
 
       const pinsToCreate = [];
-      const expiryDate = new Date();
-      expiryDate.setMonth(expiryDate.getMonth() + 6); // 6 months expiry
+      const resolvedExpiryDate = expiryDate ? new Date(expiryDate) : new Date();
+      if (Number.isNaN(resolvedExpiryDate.getTime())) {
+        return res.status(400).json({ message: "Invalid expiry date" });
+      }
 
-      for (let i = 0; i < quantity; i++) {
+      if (!expiryDate) {
+        resolvedExpiryDate.setMonth(resolvedExpiryDate.getMonth() + 6); // 6 months expiry
+      }
+
+      for (let i = 0; i < pinQuantity; i++) {
         pinsToCreate.push({
           schoolId: targetSchoolId,
           pin: generatePIN(),
           session,
           term,
-          expiryDate,
+          expiryDate: resolvedExpiryDate,
           maxUsageCount: usageLimit,
           generatedBy: req.user!.id,
         });
@@ -1656,10 +1671,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "This PIN has expired" });
       }
 
-      // Check if PIN has reached max attempts
-      const attempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
-      if (pinRecord.maxAttempts && attempts.length >= pinRecord.maxAttempts) {
+      const usageCount = pinRecord.usageCount || 0;
+      const maxUsageCount = pinRecord.maxUsageCount || 1;
+      if (usageCount >= maxUsageCount) {
         return res.status(400).json({ message: "This PIN has reached its maximum usage limit" });
+      }
+
+      // Check if PIN has reached max failed attempts
+      const attempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
+      const failedAttempts = attempts.filter((attempt: any) => attempt?.type === "failed").length;
+      if (pinRecord.maxAttempts && failedAttempts >= pinRecord.maxAttempts) {
+        return res.status(400).json({ message: "This PIN has reached its maximum failed attempts" });
       }
 
       // Find the student
@@ -1700,8 +1722,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update PIN usage
       const currentAttempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
+      const nextUsageCount = usageCount + 1;
       await storage.updatePin(pinRecord.id, {
-        isUsed: true,
+        isUsed: nextUsageCount >= maxUsageCount,
+        usageCount: nextUsageCount,
         attempts: [...currentAttempts, { type: "success", admissionNumber: student.admissionNumber, studentId: student.id, timestamp: new Date().toISOString() }],
         usedBy: { admissionNumber: student.admissionNumber, studentName: `${student.firstName} ${student.lastName}`, usedAt: new Date().toISOString() },
       });
