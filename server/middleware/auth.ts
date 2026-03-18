@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { storage } from "../storage";
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
 
@@ -12,7 +13,7 @@ export interface AuthRequest extends Request {
   };
 }
 
-export function authenticate(req: AuthRequest, res: Response, next: NextFunction) {
+export async function authenticate(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const token = req.headers.authorization?.replace("Bearer ", "");
 
@@ -21,7 +22,25 @@ export function authenticate(req: AuthRequest, res: Response, next: NextFunction
     }
 
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    req.user = decoded;
+    
+    // Verify user still exists and is active
+    const user = await storage.getUser(decoded.id);
+    if (!user) {
+      return res.status(401).json({ message: "User no longer exists" });
+    }
+    
+    if (!user.isActive) {
+      return res.status(401).json({ message: "User account is inactive" });
+    }
+    
+    // Update req.user with verified user data
+    req.user = {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      schoolId: user.schoolId || undefined,
+    };
+    
     next();
   } catch (error) {
     return res.status(401).json({ message: "Invalid or expired token" });
