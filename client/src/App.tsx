@@ -40,21 +40,56 @@ interface User {
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [, setLocation] = useLocation();
   const [user, setUser] = useState<User | null>(null);
+  const [isValidating, setIsValidating] = useState(true);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("user");
-    const token = localStorage.getItem("token");
-    
-    if (!storedUser || !token) {
-      setLocation("/login");
-      return;
-    }
-    
-    try {
-      setUser(JSON.parse(storedUser));
-    } catch {
-      setLocation("/login");
-    }
+    const validateSession = async () => {
+      const storedUser = localStorage.getItem("user");
+      const token = localStorage.getItem("token");
+      
+      if (!storedUser || !token) {
+        localStorage.removeItem("user");
+        localStorage.removeItem("token");
+        setLocation("/login");
+        return;
+      }
+      
+      try {
+        // Validate token with server
+        const response = await fetch("/api/auth/me", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          // Token is invalid or expired
+          localStorage.removeItem("user");
+          localStorage.removeItem("token");
+          queryClient.cancelQueries();
+          queryClient.clear();
+          setLocation("/login");
+          return;
+        }
+
+        const userData = await response.json();
+        setUser(userData);
+        
+        // Update stored user data in case it changed
+        localStorage.setItem("user", JSON.stringify(userData));
+      } catch (error) {
+        // Network error or invalid response
+        localStorage.removeItem("user");
+        localStorage.removeItem("token");
+        queryClient.cancelQueries();
+        queryClient.clear();
+        setLocation("/login");
+      } finally {
+        setIsValidating(false);
+      }
+    };
+
+    validateSession();
   }, [setLocation]);
 
   const handleLogout = () => {
@@ -66,8 +101,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     setLocation("/login");
   };
 
-  if (!user) {
-    return null;
+  if (isValidating || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-muted-foreground">Validating session...</p>
+        </div>
+      </div>
+    );
   }
 
   return (

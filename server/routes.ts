@@ -118,6 +118,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get single school by ID - MUST come after /me route
+  app.get("/api/schools/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      // Verify user has access to this school
+      if (req.user!.role !== 'super_admin' && req.params.id !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      const school = await storage.getSchool(req.params.id);
+      if (!school) {
+        return res.status(404).json({ message: "School not found" });
+      }
+      res.json(school);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.post("/api/schools", authenticate, authorize("super_admin"), async (req: AuthRequest, res) => {
     try {
       const { name, code, email, subdomain, logo, initialPassword } = req.body;
@@ -375,6 +393,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get single student by ID
+  app.get("/api/students/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      const student = await storage.getStudent(req.params.id);
+      if (!student) {
+        return res.status(404).json({ message: "Student not found" });
+      }
+
+      // Verify student belongs to user's school (except super admin)
+      if (req.user!.role !== "super_admin" && student.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access students from other schools" });
+      }
+
+      res.json(student);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.put("/api/students/:id", authenticate, authorize("school_admin", "teacher"), async (req: AuthRequest, res) => {
     try {
       const existing = await storage.getStudent(req.params.id);
@@ -477,160 +514,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/results/:id/submit", authenticate, authorize("teacher"), async (req: AuthRequest, res) => {
-    try {
-      const existing = await storage.getResult(req.params.id);
-      if (!existing) {
-        return res.status(404).json({ message: "Result not found" });
-      }
+  // Note: Result workflow routes (submit, approve, reject, comment, publish) are defined later in the file
+  // using POST methods for consistency. The PATCH versions have been removed to avoid duplication.
 
-      // Verify result belongs to user's school
-      if (existing.schoolId !== req.user!.schoolId) {
-        return res.status(403).json({ message: "Cannot submit results from other schools" });
-      }
-
-      // Verify result is in draft status
-      if (existing.status !== "draft") {
-        return res.status(400).json({ message: "Only draft results can be submitted" });
-      }
-
-      const result = await storage.updateResult(req.params.id, { status: "submitted" });
-      res.json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.patch("/api/results/:id/approve", authenticate, authorize("school_admin"), async (req: AuthRequest, res) => {
-    try {
-      const existing = await storage.getResult(req.params.id);
-      if (!existing) {
-        return res.status(404).json({ message: "Result not found" });
-      }
-
-      // Verify result belongs to user's school
-      if (existing.schoolId !== req.user!.schoolId) {
-        return res.status(403).json({ message: "Cannot approve results from other schools" });
-      }
-
-      // Prevent users from approving their own submissions
-      if (existing.uploadedBy === req.user!.id) {
-        return res.status(403).json({ message: "Cannot approve your own results" });
-      }
-
-      // Verify result is in submitted status
-      if (existing.status !== "submitted") {
-        return res.status(400).json({ message: "Only submitted results can be approved" });
-      }
-
-      // Check if school has a logo before approving results
-      const school = await storage.getSchool(req.user!.schoolId!);
-      if (!school?.logo) {
-        return res.status(400).json({
-          message: "Please upload your school logo in Profile Settings before approving results"
-        });
-      }
-
-      const result = await storage.updateResult(req.params.id, {
-        status: "approved",
-        approvedBy: req.user!.id,
-        approvedAt: new Date(),
-      });
-
-      // Create audit log
-      await storage.createAuditLog({
-        userId: req.user!.id,
-        action: "approve_result",
-        resource: "result",
-        resourceId: req.params.id,
-        details: { resultId: req.params.id, studentId: existing.studentId },
-      });
-
-      res.json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  app.patch("/api/results/:id/reject", authenticate, authorize("school_admin"), async (req: AuthRequest, res) => {
-    try {
-      const existing = await storage.getResult(req.params.id);
-      if (!existing) {
-        return res.status(404).json({ message: "Result not found" });
-      }
-
-      // Verify result belongs to user's school
-      if (existing.schoolId !== req.user!.schoolId) {
-        return res.status(403).json({ message: "Cannot reject results from other schools" });
-      }
-
-      // Prevent users from rejecting their own submissions
-      if (existing.uploadedBy === req.user!.id) {
-        return res.status(403).json({ message: "Cannot reject your own results" });
-      }
-
-      // Verify result is in submitted status
-      if (existing.status !== "submitted") {
-        return res.status(400).json({ message: "Only submitted results can be rejected" });
-      }
-
-      const result = await storage.updateResult(req.params.id, {
-        status: "rejected",
-        rejectionReason: req.body.reason,
-      });
-
-      // Create audit log
-      await storage.createAuditLog({
-        userId: req.user!.id,
-        action: "reject_result",
-        resource: "result",
-        resourceId: req.params.id,
-        details: { resultId: req.params.id, studentId: existing.studentId, reason: req.body.reason },
-      });
-
-      res.json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  // Add comment to result (teacher adds teacher comment, school_admin adds principal comment)
-  app.patch("/api/results/:id/comment", authenticate, authorize("teacher", "school_admin"), async (req: AuthRequest, res) => {
-    try {
-      const existing = await storage.getResult(req.params.id);
-      if (!existing) {
-        return res.status(404).json({ message: "Result not found" });
-      }
-
-      // Verify result belongs to user's school
-      if (existing.schoolId !== req.user!.schoolId) {
-        return res.status(403).json({ message: "Cannot comment on results from other schools" });
-      }
-
-      // Published results cannot be edited
-      if (existing.status === "published") {
-        return res.status(400).json({ message: "Published results cannot be modified" });
-      }
-
-      const { comment } = req.body;
-      if (!comment || typeof comment !== "string") {
-        return res.status(400).json({ message: "Comment is required" });
-      }
-
-      // Teacher adds teacherComment, school_admin adds principalComment
-      const updateData = req.user!.role === "teacher"
-        ? { teacherComment: comment }
-        : { principalComment: comment };
-
-      const result = await storage.updateResult(req.params.id, updateData);
-
-      res.json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
-  // Bulk actions for student results (delete/archive)
+  // Bulk actions for student results (delete/archive) - MUST come before /:id route
   app.post("/api/results/bulk-action", authenticate, authorize("school_admin", "super_admin"), async (req: AuthRequest, res) => {
     try {
       const { ids, action } = req.body;
@@ -1027,6 +914,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Merge this sheet's subjects into student results (incremental merge)
       await storage.mergeSheetIntoStudentResults(sheet.id);
 
+      // Automatically calculate positions for this session/term/class after merging
+      try {
+        const school = await storage.getSchool(req.user!.schoolId!);
+        const computationMode = school?.computationMode || 'total_average_only';
+        
+        // Only calculate positions if computation mode includes positions
+        if (computationMode !== 'total_average_only') {
+          const classRecord = await storage.getClass(sheet.classId);
+          await storage.calculateAndUpdatePositions(
+            req.user!.schoolId!,
+            sheet.session,
+            sheet.term,
+            classRecord?.name || sheet.classId
+          );
+        }
+      } catch (posError) {
+        // Log error but don't fail the approval
+        console.error("Error calculating positions:", posError);
+      }
+
       // Notify the teacher
       await storage.createNotification({
         userId: sheet.submittedBy,
@@ -1237,27 +1144,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/pins", authenticate, authorize("super_admin", "school_admin"), async (req: AuthRequest, res) => {
     try {
-      const { quantity, session, term, schoolId, maxUsageCount = 1 } = req.body;
+      const { quantity, session, term, schoolId, maxUsageCount = 1, expiryDate } = req.body;
       const targetSchoolId = req.user!.role === "super_admin" ? schoolId : req.user!.schoolId!;
 
       if (!targetSchoolId) {
         return res.status(400).json({ message: "School ID is required" });
       }
 
+      const pinQuantity = Math.max(1, Math.min(1000, parseInt(quantity) || 0));
+      if (!pinQuantity) {
+        return res.status(400).json({ message: "A valid quantity is required" });
+      }
+
+      if (!session || !term) {
+        return res.status(400).json({ message: "Session and term are required" });
+      }
+
       // Validate maxUsageCount
       const usageLimit = Math.max(1, Math.min(100, parseInt(maxUsageCount) || 1));
 
       const pinsToCreate = [];
-      const expiryDate = new Date();
-      expiryDate.setMonth(expiryDate.getMonth() + 6); // 6 months expiry
+      const resolvedExpiryDate = expiryDate ? new Date(expiryDate) : new Date();
+      if (Number.isNaN(resolvedExpiryDate.getTime())) {
+        return res.status(400).json({ message: "Invalid expiry date" });
+      }
 
-      for (let i = 0; i < quantity; i++) {
+      if (!expiryDate) {
+        resolvedExpiryDate.setMonth(resolvedExpiryDate.getMonth() + 6); // 6 months expiry
+      }
+
+      for (let i = 0; i < pinQuantity; i++) {
         pinsToCreate.push({
           schoolId: targetSchoolId,
           pin: generatePIN(),
           session,
           term,
-          expiryDate,
+          expiryDate: resolvedExpiryDate,
           maxUsageCount: usageLimit,
           generatedBy: req.user!.id,
         });
@@ -1267,6 +1189,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(201).json(pins);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
+    }
+  });
+
+  // Get single PIN by ID
+  app.get("/api/pins/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      const pin = await storage.getPinById(req.params.id);
+      if (!pin) {
+        return res.status(404).json({ message: "PIN not found" });
+      }
+
+      // Verify PIN belongs to user's school (except super admin)
+      if (req.user!.role !== "super_admin" && pin.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access PINs from other schools" });
+      }
+
+      res.json(pin);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
     }
   });
 
@@ -1477,6 +1418,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get single class by ID
+  app.get("/api/classes/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      const classRecord = await storage.getClass(req.params.id);
+      if (!classRecord) {
+        return res.status(404).json({ message: "Class not found" });
+      }
+
+      // Verify class belongs to user's school (except super admin)
+      if (req.user!.role !== "super_admin" && classRecord.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access classes from other schools" });
+      }
+
+      res.json(classRecord);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.patch("/api/classes/:id", authenticate, authorize("school_admin"), async (req: AuthRequest, res) => {
     try {
       const classRecord = await storage.getClass(req.params.id);
@@ -1537,6 +1497,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(201).json(subject);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
+    }
+  });
+
+  // Get single subject by ID
+  app.get("/api/subjects/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      const subject = await storage.getSubject(req.params.id);
+      if (!subject) {
+        return res.status(404).json({ message: "Subject not found" });
+      }
+
+      // Verify subject belongs to user's school (except super admin)
+      if (req.user!.role !== "super_admin" && subject.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access subjects from other schools" });
+      }
+
+      res.json(subject);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
     }
   });
 
@@ -1692,10 +1671,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "This PIN has expired" });
       }
 
-      // Check if PIN has reached max attempts
-      const attempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
-      if (pinRecord.maxAttempts && attempts.length >= pinRecord.maxAttempts) {
+      const usageCount = pinRecord.usageCount || 0;
+      const maxUsageCount = pinRecord.maxUsageCount || 1;
+      if (usageCount >= maxUsageCount) {
         return res.status(400).json({ message: "This PIN has reached its maximum usage limit" });
+      }
+
+      // Check if PIN has reached max failed attempts
+      const attempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
+      const failedAttempts = attempts.filter((attempt: any) => attempt?.type === "failed").length;
+      if (pinRecord.maxAttempts && failedAttempts >= pinRecord.maxAttempts) {
+        return res.status(400).json({ message: "This PIN has reached its maximum failed attempts" });
       }
 
       // Find the student
@@ -1736,8 +1722,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update PIN usage
       const currentAttempts = Array.isArray(pinRecord.attempts) ? pinRecord.attempts : [];
+      const nextUsageCount = usageCount + 1;
       await storage.updatePin(pinRecord.id, {
-        isUsed: true,
+        isUsed: nextUsageCount >= maxUsageCount,
+        usageCount: nextUsageCount,
         attempts: [...currentAttempts, { type: "success", admissionNumber: student.admissionNumber, studentId: student.id, timestamp: new Date().toISOString() }],
         usedBy: { admissionNumber: student.admissionNumber, studentName: `${student.firstName} ${student.lastName}`, usedAt: new Date().toISOString() },
       });
@@ -2024,6 +2012,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get single result by ID - MUST come after all specific routes (/bulk-action, /reaggregate, /calculate-positions, /bulk)
+  app.get("/api/results/:id", authenticate, async (req: AuthRequest, res) => {
+    try {
+      const result = await storage.getResult(req.params.id);
+      if (!result) {
+        return res.status(404).json({ message: "Result not found" });
+      }
+
+      // Verify result belongs to user's school (except super admin)
+      if (req.user!.role !== "super_admin" && result.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access results from other schools" });
+      }
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   // ===== SCORE METRICS ROUTES =====
   app.get("/api/score-metrics", authenticate, async (req: AuthRequest, res) => {
     try {
@@ -2056,6 +2063,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       res.status(201).json(metric);
+    } catch (error: any) {
+      res.status(400).json({ message: error.message });
+    }
+  });
+
+  // Bulk update score metrics order - MUST come before /:id route to avoid conflicts
+  app.put("/api/score-metrics/order", authenticate, authorize("school_admin"), async (req: AuthRequest, res) => {
+    try {
+      const { metrics } = req.body; // Array of {id, order}
+      if (!Array.isArray(metrics)) {
+        return res.status(400).json({ message: "Invalid metrics array" });
+      }
+
+      for (const m of metrics) {
+        const metric = await storage.getScoreMetric(m.id);
+        if (metric && metric.schoolId === req.user!.schoolId) {
+          await storage.updateScoreMetric(m.id, { order: m.order });
+        }
+      }
+
+      const updated = await storage.listScoreMetrics(req.user!.schoolId!);
+      res.json(updated);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -2095,31 +2124,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Bulk update score metrics order
-  app.put("/api/score-metrics/order", authenticate, authorize("school_admin"), async (req: AuthRequest, res) => {
-    try {
-      const { metrics } = req.body; // Array of {id, order}
-      if (!Array.isArray(metrics)) {
-        return res.status(400).json({ message: "Invalid metrics array" });
-      }
-
-      for (const m of metrics) {
-        const metric = await storage.getScoreMetric(m.id);
-        if (metric && metric.schoolId === req.user!.schoolId) {
-          await storage.updateScoreMetric(m.id, { order: m.order });
-        }
-      }
-
-      const updated = await storage.listScoreMetrics(req.user!.schoolId!);
-      res.json(updated);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
-    }
-  });
-
   // ===== CLASS SUBJECTS ROUTES =====
   app.get("/api/classes/:classId/subjects", authenticate, async (req: AuthRequest, res) => {
     try {
+      // Verify class belongs to user's school (except super admin)
+      const classRecord = await storage.getClass(req.params.classId);
+      if (!classRecord) {
+        return res.status(404).json({ message: "Class not found" });
+      }
+
+      if (req.user!.role !== "super_admin" && classRecord.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access class subjects from other schools" });
+      }
+
       const classSubjectsList = await storage.getClassSubjects(req.params.classId);
       res.json(classSubjectsList);
     } catch (error: any) {
@@ -2168,8 +2185,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/notifications/:id/read", authenticate, async (req: AuthRequest, res) => {
     try {
-      const notification = await storage.markNotificationRead(req.params.id);
-      res.json(notification);
+      // Verify notification belongs to user
+      const notification = await storage.getNotification(req.params.id);
+      if (notification && notification.userId !== req.user!.id) {
+        return res.status(403).json({ message: "Cannot mark notifications from other users as read" });
+      }
+
+      const updated = await storage.markNotificationRead(req.params.id);
+      res.json(updated);
     } catch (error: any) {
       res.status(400).json({ message: error.message });
     }
@@ -2217,6 +2240,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/teacher-assignments/:teacherId", authenticate, async (req: AuthRequest, res) => {
     try {
+      // Verify teacher belongs to user's school (except super admin)
+      const teacher = await storage.getUser(req.params.teacherId);
+      if (!teacher) {
+        return res.status(404).json({ message: "Teacher not found" });
+      }
+
+      if (req.user!.role !== "super_admin" && teacher.schoolId !== req.user!.schoolId) {
+        return res.status(403).json({ message: "Cannot access teacher assignments from other schools" });
+      }
+
       const assignments = await storage.getTeacherAssignments(req.params.teacherId);
       res.json(assignments);
     } catch (error: any) {
@@ -2311,6 +2344,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         approvedBy: req.user!.id,
         approvedAt: new Date(),
       });
+
+      // Automatically calculate positions for this session/term/class
+      try {
+        const school = await storage.getSchool(req.user!.schoolId!);
+        const computationMode = school?.computationMode || 'total_average_only';
+        
+        // Only calculate positions if computation mode includes positions
+        if (computationMode !== 'total_average_only') {
+          await storage.calculateAndUpdatePositions(
+            req.user!.schoolId!,
+            result.session,
+            result.term,
+            result.class
+          );
+        }
+      } catch (posError) {
+        // Log error but don't fail the approval
+        console.error("Error calculating positions:", posError);
+      }
 
       // Notify the uploader
       if (result.uploadedBy) {
